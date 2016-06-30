@@ -30,6 +30,7 @@
 // You can turn on ARC for only AFNetworking files by adding -fobjc-arc to the build phase for each of its files.
 #endif
 
+// 自定义的 操作的 状态机
 typedef NS_ENUM(NSInteger, AFOperationState) {
     AFOperationPausedState      = -1,
     AFOperationReadyState       = 1,
@@ -37,6 +38,7 @@ typedef NS_ENUM(NSInteger, AFOperationState) {
     AFOperationFinishedState    = 3,
 };
 
+// url requst operation compeltion group 注意和上层 HTTPRequest 区别
 static dispatch_group_t url_request_operation_completion_group() {
     static dispatch_group_t af_url_request_operation_completion_group;
     static dispatch_once_t onceToken;
@@ -46,7 +48,7 @@ static dispatch_group_t url_request_operation_completion_group() {
 
     return af_url_request_operation_completion_group;
 }
-
+// url request operation completion queue 注意和上层 HTTPRequest 区别
 static dispatch_queue_t url_request_operation_completion_queue() {
     static dispatch_queue_t af_url_request_operation_completion_queue;
     static dispatch_once_t onceToken;
@@ -133,6 +135,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
     }
 }
 
+// delegate 的 operation 都在这个类,参考前面声明的注释
 @interface AFURLConnectionOperation ()
 @property (readwrite, nonatomic, assign) AFOperationState state;
 @property (readwrite, nonatomic, strong) NSRecursiveLock *lock;
@@ -170,8 +173,8 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
     }
 }
 
+//获取 AFNetworking线程,单例模式,dspatch_once 是生成单例模式的常见模式, 确保线程安全
 + (NSThread *)networkRequestThread {
-    //获取 AFNetworking线程,单例模式,dspatch_once 是生成单例模式的常见模式, 确保线程安全
     static NSThread *_networkRequestThread = nil;
     static dispatch_once_t oncePredicate;
     dispatch_once(&oncePredicate, ^{
@@ -190,6 +193,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 		return nil;
     }
 
+    //初始化的状态是 Operation Ready
     _state = AFOperationReadyState;
 
     self.lock = [[NSRecursiveLock alloc] init];
@@ -201,6 +205,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 
     self.shouldUseCredentialStorage = YES;
 
+    // 设置安全策略
     self.securityPolicy = [AFSecurityPolicy defaultPolicy];
 
     return self;
@@ -224,6 +229,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 
 #pragma mark -
 
+// 注意对外接口都有加锁
 - (void)setResponseData:(NSData *)responseData {
     [self.lock lock];
     if (!responseData) {
@@ -276,6 +282,9 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
     self.request = mutableRequest;
 }
 
+/**
+ *  这里大文件下载需要注意,设置 outputStream 的位置
+ */
 - (NSOutputStream *)outputStream {
     if (!_outputStream) {
         //默认的 outputStream 是保存到 memory 的, 下载大文件有撑爆内存的风险
@@ -344,6 +353,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
         return;
     }
 
+    // 可能导致多个线程中进行状态转换,需要加锁
     [self.lock lock];
     NSString *oldStateKey = AFKeyPathFromOperationState(self.state);
     NSString *newStateKey = AFKeyPathFromOperationState(state);
@@ -366,6 +376,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 
     [self.lock lock];
     if ([self isExecuting]) {
+        //在线程中通知 operation cancel ,注意所有的 operation 的操作都需要在 networkRequestThread 中完成
         [self performSelector:@selector(operationDidPause) onThread:[[self class] networkRequestThread] withObject:nil waitUntilDone:NO modes:[self.runLoopModes allObjects]];
 
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -375,6 +386,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
         });
     }
 
+    // 状态切换到 paused state
     self.state = AFOperationPausedState;
     [self.lock unlock];
 }
@@ -395,6 +407,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
     }
 
     [self.lock lock];
+    // resume 以后进行状态切换
     self.state = AFOperationReadyState;
 
     [self start];
@@ -487,6 +500,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
     [self.lock unlock];
 }
 
+// 该方法是在 networkRequestThread 中执行的
 - (void)operationDidStart {
     [self.lock lock];
     if (![self isCancelled]) {
@@ -494,6 +508,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 
         //在当前线程的 runloop 中添加对 connection 和 outputStream 事件的侦听, 回调就会在当前线程(AFNetworking线程)执行(NSURLConnection 的特点)
         NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
+        //networkRequestThread 线程的 runloop 中添加 connection 和 outputstream 的回调事件
         for (NSString *runLoopMode in self.runLoopModes) {
             [self.connection scheduleInRunLoop:runLoop forMode:runLoopMode];
             [self.outputStream scheduleInRunLoop:runLoop forMode:runLoopMode];
@@ -527,12 +542,14 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
         [super cancel];
 
         if ([self isExecuting]) {
+            // 在networkRequestThread 中调用 cancel
             [self performSelector:@selector(cancelConnection) onThread:[[self class] networkRequestThread] withObject:nil waitUntilDone:NO modes:[self.runLoopModes allObjects]];
         }
     }
     [self.lock unlock];
 }
 
+// 该方法是在 networkRequestThread 中执行的, 对 connection 执行 cancel 方法,并执行它的 delegate 方法
 - (void)cancelConnection {
     NSDictionary *userInfo = nil;
     if ([self.request URL]) {
@@ -543,6 +560,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
     if (![self isFinished]) {
         if (self.connection) {
             [self.connection cancel];
+            //执行 delegate 方法
             [self performSelector:@selector(connection:didFailWithError:) withObject:self.connection withObject:error];
         } else {
             // Accommodate race condition where `self.connection` has not yet been set before cancellation
@@ -635,7 +653,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 }
 
 #pragma mark - NSURLConnectionDelegate
-
+// authentication challenge, 需要参考后面的文章和源码
 - (void)connection:(NSURLConnection *)connection
 willSendRequestForAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
 {
@@ -645,13 +663,21 @@ willSendRequestForAuthenticationChallenge:(NSURLAuthenticationChallenge *)challe
     }
 
     if ([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+        //是否信任指定的 server. 当 server 需要 authentication challenge 时候调用
+        
+        //获取trust object 需要验证的信任对象
+        //SecTrustRef trust = challenge.protectionSpace.serverTrust;
         if ([self.securityPolicy evaluateServerTrust:challenge.protectionSpace.serverTrust forDomain:challenge.protectionSpace.host]) {
+            //验证成功，生成NSURLCredential凭证cred，告知challenge的sender使用这个凭证来继续连接
             NSURLCredential *credential = [NSURLCredential credentialForTrust:challenge.protectionSpace.serverTrust];
+            //验证通过
             [[challenge sender] useCredential:credential forAuthenticationChallenge:challenge];
         } else {
+            //验证不通过
             [[challenge sender] cancelAuthenticationChallenge:challenge];
         }
     } else {
+        //记录验证次数哦
         if ([challenge previousFailureCount] == 0) {
             if (self.credential) {
                 [[challenge sender] useCredential:self.credential forAuthenticationChallenge:challenge];

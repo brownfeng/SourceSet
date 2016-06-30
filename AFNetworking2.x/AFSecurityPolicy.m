@@ -80,6 +80,7 @@ static id AFPublicKeyForCertificate(NSData *certificate) {
     //根据 证书 和 认证策略 创建一个 信任管理的对象
     __Require_noErr_Quiet(SecTrustCreateWithCertificates(tempCertificates, policy, &allowedTrust), _out);
     // 鉴定 信任信息对象 的内容, 返回信任结果(在 allowedTrust 中, 有可能阻塞调用线程)
+//     使用系统默认验证方式验证Trust Object。SecTrustEvaluate会根据Trust Object的验证策略，一级一级往上，验证证书链上每一级数字签名的有效性（上一部分有讲解），从而评估证书的有效性。
     __Require_noErr_Quiet(SecTrustEvaluate(allowedTrust, &result), _out);
 
     //在信任信息对象被鉴定以后,调用该方法获取 SecTrustRef 信任信息的 public key
@@ -117,11 +118,14 @@ static BOOL AFServerTrustIsValid(SecTrustRef serverTrust) {
     BOOL isValid = NO;
     SecTrustResultType result;
     //鉴定 信任信息的内容,坚定结果在 result
+//     使用系统默认验证方式验证Trust Object。SecTrustEvaluate会根据Trust Object的验证策略，一级一级往上，验证证书链上每一级数字签名的有效性（上一部分有讲解），从而评估证书的有效性。
     __Require_noErr_Quiet(SecTrustEvaluate(serverTrust, &result), _out);
 
     //kSecTrustResultUnspecified:证书通过验证，但用户没有设置这些证书是否被信任
     //kSecTrustResultProceed:证书通过验证，用户有操作设置了证书被信任，例如在弹出的是否信任的alert框中选择always trust
     isValid = (result == kSecTrustResultUnspecified || result == kSecTrustResultProceed);
+    //3)验证成功，生成NSURLCredential凭证cred，告知challenge的sender使用这个凭证来继续连接
+
 
 _out:
     return isValid;
@@ -161,6 +165,7 @@ static NSArray * AFPublicKeyTrustChainForServerTrust(SecTrustRef serverTrust) {
         __Require_noErr_Quiet(SecTrustCreateWithCertificates(certificates, policy, &trust), _out);
 
         SecTrustResultType result;
+//         使用系统默认验证方式验证Trust Object。SecTrustEvaluate会根据Trust Object的验证策略，一级一级往上，验证证书链上每一级数字签名的有效性（上一部分有讲解），从而评估证书的有效性。
         __Require_noErr_Quiet(SecTrustEvaluate(trust, &result), _out);
 
         [trustChain addObject:(__bridge_transfer id)SecTrustCopyPublicKey(trust)];
@@ -403,7 +408,6 @@ static NSArray * AFPublicKeyTrustChainForServerTrust(SecTrustRef serverTrust) {
             return trustedPublicKeyCount > 0;
         }
     }
-    
     return NO;
 }
 
